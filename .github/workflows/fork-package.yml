@@ -1,0 +1,76 @@
+name: Build fork package
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  debian-package:
+    name: Debian package (amd64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out this fork
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes devscripts help2man
+
+      - name: Set package metadata
+        id: package
+        shell: bash
+        run: |
+          version="$(./buildtools/get_version)"
+          revision="$(git rev-parse --short HEAD)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "filename=snclient-${version}-${revision}-linux-amd64.deb" >> "$GITHUB_OUTPUT"
+
+      - name: Build package
+        env:
+          DEBEMAIL: GitHub Actions <actions@github.com>
+          DEBFULLNAME: GitHub Actions
+          PACKAGE_FILENAME: ${{ steps.package.outputs.filename }}
+          VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          GOOS=linux GOARCH=amd64 make deb
+          mv snclient-*.deb "$PACKAGE_FILENAME"
+          sha256sum "$PACKAGE_FILENAME" > "$PACKAGE_FILENAME.sha256"
+
+      - name: Inspect package
+        env:
+          PACKAGE_FILENAME: ${{ steps.package.outputs.filename }}
+        run: |
+          dpkg-deb --info "$PACKAGE_FILENAME"
+          dpkg-deb --contents "$PACKAGE_FILENAME"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: snclient-${{ steps.package.outputs.version }}-${{ github.sha }}-linux-amd64
+          path: |
+            ${{ steps.package.outputs.filename }}
+            ${{ steps.package.outputs.filename }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
